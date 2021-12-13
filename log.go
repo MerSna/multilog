@@ -3,6 +3,7 @@ package multilog
 import (
 	"database/sql"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"runtime"
@@ -40,12 +41,13 @@ type DatabaseConfig struct {
 }
 
 type Logger struct {
-	Conn       net.Conn
-	DBConf     *DatabaseConfig
-	RedisCli   *redis.Client
-	Outer      *os.File
-	Level      int
-	StrictMode bool
+	Conn        net.Conn
+	DBConf      *DatabaseConfig
+	RedisCli    *redis.Client
+	Outer       *os.File
+	MultiWriter []io.Writer
+	Level       int
+	StrictMode  bool
 }
 
 type logInfo struct {
@@ -55,11 +57,12 @@ type logInfo struct {
 
 func _globalLogger() *Logger {
 	l := &Logger{
-		Conn:       nil,
-		DBConf:     nil,
-		RedisCli:   nil,
-		Outer:      os.Stdout,
-		StrictMode: true,
+		Conn:        nil,
+		DBConf:      nil,
+		RedisCli:    nil,
+		Outer:       os.Stdout,
+		MultiWriter: make([]io.Writer, 0),
+		StrictMode:  true,
 	}
 	return l
 }
@@ -123,13 +126,19 @@ func (l *Logger) output(calldepth int, prefixTag int, str string) {
 	}
 
 	var wg = &sync.WaitGroup{}
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		l.redisWrite(tstring, info)
 		wg.Done()
 	}()
 	go func() {
 		l.sqlWrite(tstring, prefixTagMap[prefixTag], fmt.Sprintf("%s:%d", file, line), str)
+		wg.Done()
+	}()
+	go func() {
+		for _, w := range l.MultiWriter {
+			w.Write([]byte(info))
+		}
 		wg.Done()
 	}()
 	if l.StrictMode {
